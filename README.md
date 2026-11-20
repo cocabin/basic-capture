@@ -11,7 +11,7 @@ OBS gerektirmeden capture kartındaki görüntüyü ekranda gösterir. Tek bir e
 
 ## Özellikler
 
-- **Düşük gecikme:** Görüntü DirectShow ile kartın çıkışından doğrudan ekrana çizilir, kareler bekletilmez.
+- **Düşük gecikme:** Kareler geldiği an ekran kartıyla (OpenGL) çizilir, bekletilmez.
 - **Akıcı mod:** Kareleri küçük bir tamponda tutup ekran kartıyla tam eşit aralıklarla çizer. Düzensiz kare gönderen kartlarda takılmayı yok eder (+1 kare gecikme).
 - **Keskinleştirme:** GPU'da Catmull-Rom ölçekleme + AMD FidelityFX CAS. 720p görüntüyü büyük ekranda daha net gösterir (Kapalı / Hafif / Orta / Güçlü).
 - **FPS göstergesi:** Ekrana çizilen gerçek kare sayısı. Kapalı, tıklayınca ya da her zaman görünür.
@@ -63,12 +63,10 @@ Ucuz "4K" USB capture kartlarının çoğunda bulunan MS2109 çipi:
 
 ```
 BasicCapture.exe --test            # kartı kısa süre açar, sonucu test-sonuc.txt'ye yazar
-BasicCapture.exe --olc akici=1 keskin=2 "1280x720 MJPG 60 fps"
-                                   # kare zamanlamasını ölçer, sonucu olcum.txt'ye yazar
 ```
 
 ---
 
 ### English
 
-Basic Capture shows the video from a USB capture card or webcam without OBS. Single exe, no installer, no dependencies beyond the .NET Framework 4.x built into Windows. Features: low-latency DirectShow rendering, an optional *smooth mode* (paced GPU presentation that removes stutter from cards that deliver frames unevenly, +1 frame latency), GPU sharpening (Catmull-Rom upscaling + AMD FidelityFX CAS), FPS counter, volume control, full screen, Turkish/English UI. Build with `build.ps1`; prebuilt exe is on the Releases page.
+Basic Capture shows the video from a USB capture card or webcam without OBS. Single exe, no installer, no dependencies beyond the .NET Framework 4.x built into Windows. Features: low-latency GPU (OpenGL) rendering, an optional *smooth mode* (paced GPU presentation that removes stutter from cards that deliver frames unevenly, +1 frame latency), GPU sharpening (Catmull-Rom upscaling + AMD FidelityFX CAS), FPS counter, volume control, full screen, Turkish/English UI. Build with `build.ps1`; prebuilt exe is on the Releases page.

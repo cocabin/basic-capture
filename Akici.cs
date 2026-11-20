@@ -1,6 +1,6 @@
-// Akıcı mod: kareleri küçük bir tamponda tutup tam eşit aralıklarla, ekran kartıyla (OpenGL) çizer.
-// Kart kareleri düzensiz gönderdiğinde (ör. MS2109'da 1080p 30) oluşan takılmaları yok eder.
-// Bedeli: yaklaşık 1 kare ek gecikme.
+// Görüntüyü ekran kartıyla (OpenGL) çizer. Normalde her kare geldiği an çizilir.
+// Akıcı modda kareler küçük bir tamponda tutulup tam eşit aralıklarla çizilir: düzensiz kare
+// gönderen kartlarda (ör. MS2109'da 1080p 30) takılmayı yok eder, bedeli ~1 kare ek gecikme.
 
 using System;
 using System.Collections.Generic;
@@ -253,13 +253,9 @@ void main() {
         volatile bool calis = true;
 
         public int Cizilen;   // ekrana çizilen yeni kare sayısı (FPS sayacı bunu okur)
-        public int Gelen;     // karttan gelen kare sayısı
-        public int Tekrar;    // kare zamanında gelmediği için eskisi tekrar gösterildi
-        public int Atilan;    // tampon taştığı için atılan kare
         public volatile bool Doldur;
         public volatile float Keskinlik;   // 0 = kapalı (düz bilinear), 0..1 = keskinleştirme gücü
         public string HataMetni;
-        public string ShaderNotu = "";
         readonly bool tamponlu;            // true = akıcı (eşit aralıklı), false = kare gelir gelmez çiz
 
         public Sunucu(IntPtr hwnd, int w, int h, double fps, bool asagidanYukari, bool tamponlu)
@@ -301,11 +297,11 @@ void main() {
             lock (kilit)
             {
                 if (havuz.Count > 0) hedef = havuz.Pop();
-                else if (kuyruk.Count >= 4) { hedef = kuyruk.Dequeue(); Atilan++; } // çizici takıldıysa en eskiyi feda et
+                else if (kuyruk.Count >= 4) hedef = kuyruk.Dequeue(); // çizici takıldıysa en eskiyi feda et
                 else { hedef = Marshal.AllocHGlobal(boyut); hepsi.Add(hedef); }
             }
             Kopyala(hedef, buf, (IntPtr)Math.Min(len, boyut));
-            lock (kilit) { kuyruk.Enqueue(hedef); Gelen++; }
+            lock (kilit) kuyruk.Enqueue(hedef);
             geldi.Set();
             return 0;
         }
@@ -339,8 +335,8 @@ void main() {
                 glEnable(TEX2D);
 
                 // Keskinleştirme shader'ı; derlenemezse düz çizime devam
-                try { ShaderHazirla(); ShaderNotu = "shader hazır"; }
-                catch (Exception ex) { program = 0; ShaderNotu = "shader yok: " + ex.Message; }
+                try { ShaderHazirla(); }
+                catch { program = 0; } // shader yoksa keskinleştirmesiz düz çizim
 
                 if (!tamponlu)
                 {
@@ -377,7 +373,7 @@ void main() {
                         if (q > 0)
                         {
                             yeni = kuyruk.Dequeue();
-                            while (kuyruk.Count > 2) { havuz.Push(kuyruk.Dequeue()); Atilan++; } // gecikme birikmesin
+                            while (kuyruk.Count > 2) havuz.Push(kuyruk.Dequeue()); // gecikme birikmesin
                         }
                     }
                     ortKuyruk = ortKuyruk * 0.97 + q * 0.03;
@@ -389,7 +385,6 @@ void main() {
                         son = yeni;
                         Interlocked.Increment(ref Cizilen);
                     }
-                    else if (son != IntPtr.Zero) Interlocked.Increment(ref Tekrar);
 
                     Ciz(dc, son != IntPtr.Zero);
 
@@ -426,7 +421,7 @@ void main() {
                 IntPtr yeni = IntPtr.Zero;
                 lock (kilit)
                 {
-                    while (kuyruk.Count > 1) { havuz.Push(kuyruk.Dequeue()); Atilan++; } // hep en yeni kare
+                    while (kuyruk.Count > 1) havuz.Push(kuyruk.Dequeue()); // hep en yeni kare
                     if (kuyruk.Count > 0) yeni = kuyruk.Dequeue();
                 }
                 if (yeni == IntPtr.Zero) continue;

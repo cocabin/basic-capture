@@ -32,7 +32,6 @@ namespace CaptureIzle
         public static Guid AudioInputCat = new Guid("33D9A762-90C8-11d0-BD43-00A0C911CE86");
         public static Guid FilterGraph = new Guid("E436EBB3-524F-11CE-9F53-0020AF0BA770");
         public static Guid CaptureGraphBuilder2 = new Guid("BF87B6E1-8C27-11D0-B3F0-00AA003761C5");
-        public static Guid VideoRendererDefault = new Guid("6BC1CFFA-8FC1-4261-AC22-CFB4CC38DB50");
         public static Guid SampleGrabber = new Guid("C1F400A0-3F08-11d3-9F0B-006008039E37");
         public static Guid NullRenderer = new Guid("C1F400A4-3F08-11d3-9F0B-006008039E37");
         public static Guid SubRGB32 = new Guid("e436eb7e-524f-11ce-9f53-0020af0ba770");
@@ -102,44 +101,6 @@ namespace CaptureIzle
         [PreserveSig] int Stop();
     }
 
-    [ComImport, Guid("56A868B4-0AD4-11CE-B03A-0020AF0BA770"), InterfaceType(ComInterfaceType.InterfaceIsDual)]
-    interface IVideoWindow
-    {
-        [PreserveSig] int put_Caption(IntPtr s);
-        [PreserveSig] int get_Caption(out IntPtr s);
-        [PreserveSig] int put_WindowStyle(int v);
-        [PreserveSig] int get_WindowStyle(out int v);
-        [PreserveSig] int put_WindowStyleEx(int v);
-        [PreserveSig] int get_WindowStyleEx(out int v);
-        [PreserveSig] int put_AutoShow(int v);
-        [PreserveSig] int get_AutoShow(out int v);
-        [PreserveSig] int put_WindowState(int v);
-        [PreserveSig] int get_WindowState(out int v);
-        [PreserveSig] int put_BackgroundPalette(int v);
-        [PreserveSig] int get_BackgroundPalette(out int v);
-        [PreserveSig] int put_Visible(int v);
-        [PreserveSig] int get_Visible(out int v);
-        [PreserveSig] int put_Left(int v);
-        [PreserveSig] int get_Left(out int v);
-        [PreserveSig] int put_Width(int v);
-        [PreserveSig] int get_Width(out int v);
-        [PreserveSig] int put_Top(int v);
-        [PreserveSig] int get_Top(out int v);
-        [PreserveSig] int put_Height(int v);
-        [PreserveSig] int get_Height(out int v);
-        [PreserveSig] int put_Owner(IntPtr v);
-        [PreserveSig] int get_Owner(out IntPtr v);
-        [PreserveSig] int put_MessageDrain(IntPtr v);
-        [PreserveSig] int get_MessageDrain(out IntPtr v);
-        [PreserveSig] int get_BorderColor(out int v);
-        [PreserveSig] int put_BorderColor(int v);
-        [PreserveSig] int get_FullScreenMode(out int v);
-        [PreserveSig] int put_FullScreenMode(int v);
-        [PreserveSig] int SetWindowForeground(int v);
-        [PreserveSig] int NotifyOwnerMessage(IntPtr h, int m, IntPtr w, IntPtr l);
-        [PreserveSig] int SetWindowPosition(int l, int t, int w, int h);
-    }
-
     [ComImport, Guid("56A868B3-0AD4-11CE-B03A-0020AF0BA770"), InterfaceType(ComInterfaceType.InterfaceIsDual)]
     interface IBasicAudio
     {
@@ -154,13 +115,6 @@ namespace CaptureIzle
         [PreserveSig] int GetFormat(out IntPtr pmt);
         [PreserveSig] int GetNumberOfCapabilities(out int count, out int size);
         [PreserveSig] int GetStreamCaps(int i, out IntPtr pmt, IntPtr scc);
-    }
-
-    [ComImport, Guid("1BD0ECB0-F8E2-11CE-AAC6-0020AF0B99A3"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IQualProp
-    {
-        [PreserveSig] int get_FramesDroppedInRenderer(out int v);
-        [PreserveSig] int get_FramesDrawn(out int v);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -531,29 +485,15 @@ namespace CaptureIzle
         IGraphBuilder graf;
         ICaptureGraphBuilder2 yapici;
         IMediaControl kontrol;
-        IVideoWindow pencere;
         IBasicAudio ses;
-        IBaseFilter vFiltre, aFiltre, rFiltre;
-        IQualProp kalite;
+        IBaseFilter vFiltre, aFiltre, gFiltre, nFiltre;
 
-        // Keskinleştirme: 0 = kapalı, 1 = hafif, 2 = orta, 3 = güçlü (GPU ile çizim gerektirir)
-        public int keskin;
-        static float KeskinGuc(int seviye) { return seviye <= 0 ? 0f : seviye == 1 ? 0.3f : seviye == 2 ? 0.6f : 1f; }
-        bool GpuYolu { get { return akici || keskin > 0; } }
-
-        // Akıcı mod
-        public bool akici;
+        // Görüntü her zaman Sunucu ile GPU'da çizilir; akıcı mod yalnızca zamanlamayı değiştirir
         Sunucu sunucu;
         GoruntuPaneli panel;
-        IBaseFilter gFiltre, nFiltre;
-        bool Calisiyor { get { return pencere != null || sunucu != null; } }
-
-        bool KareSay(out int kare)
-        {
-            if (sunucu != null) { kare = sunucu.Cizilen; return true; }
-            kare = 0;
-            return kalite != null && kalite.get_FramesDrawn(out kare) >= 0;
-        }
+        bool akici;
+        int keskin; // 0 = kapalı, 1 = hafif, 2 = orta, 3 = güçlü
+        static float KeskinGuc(int seviye) { return seviye <= 0 ? 0f : seviye == 1 ? 0.3f : seviye == 2 ? 0.6f : 1f; }
 
         // Arayüz
         OdakSizButon ayarBtn;
@@ -749,24 +689,7 @@ namespace CaptureIzle
                 }
 
                 sonKare = -1;
-                if (GpuYolu)
-                {
-                    AkiciBagla(); // akıcı mod ve/veya keskinleştirme: kareleri GPU ile biz çiziyoruz
-                }
-                else
-                {
-                    // Ekran çizicisini kendimiz ekliyoruz ki çizilen kareleri sayabilelim (FPS)
-                    try
-                    {
-                        rFiltre = (IBaseFilter)Activator.CreateInstance(Type.GetTypeFromCLSID(G.VideoRendererDefault));
-                        if (graf.AddFilter(rFiltre, "Ekran") < 0) { Marshal.ReleaseComObject(rFiltre); rFiltre = null; }
-                    }
-                    catch { rFiltre = null; }
-
-                    cat = G.PinCapture; typ = G.MediaVideo;
-                    DS.Check(yapici.RenderStream(ref cat, ref typ, vFiltre, null, rFiltre), Dil.T("Görüntüyü bağlama", "Connecting video"));
-                    kalite = rFiltre as IQualProp;
-                }
+                GoruntuBagla();
 
                 // Ses
                 string sesNot = "";
@@ -783,22 +706,10 @@ namespace CaptureIzle
                     catch (Exception ex) { sesNot = Dil.T("  (ses yok: ", "  (no audio: ") + ex.Message + ")"; }
                 }
 
-                // Saati kapat: kareler beklemeden, geldiği an çizilsin (en düşük gecikme).
-                // (Ölçüm modunda "tampon=-1" ile saat açık bırakılıp karşılaştırılabilir.)
-                if (tamponMs == 0) ((IMediaFilter)graf).SetSyncSource(IntPtr.Zero);
+                // Saati kapat: kareler beklemeden, geldiği an Sunucu'ya ulaşsın (zamanlamayı Sunucu yapar)
+                ((IMediaFilter)graf).SetSyncSource(IntPtr.Zero);
 
-                if (sunucu != null)
-                {
-                    sunucu.Baslat();
-                }
-                else
-                {
-                    pencere = (IVideoWindow)graf;
-                    pencere.put_Owner(Handle);
-                    pencere.put_WindowStyle(0x40000000 | 0x04000000 | 0x02000000); // CHILD | CLIPSIBLINGS | CLIPCHILDREN
-                    pencere.put_MessageDrain(Handle);
-                    pencere.put_Visible(-1);
-                }
+                sunucu.Baslat();
                 Yerlestir();
 
                 ses = graf as IBasicAudio;
@@ -808,8 +719,6 @@ namespace CaptureIzle
                 DS.Check(kontrol.Run(), Dil.T("Başlatma", "Starting") + " [" + fSecili + "]");
 
                 Durum = vSecili + " | " + (fSecili ?? "?") + " | ses: " + (string.IsNullOrEmpty(aSecili) ? "kapalı" : aSecili) + sesNot;
-                baslikEk = (fSecili ?? vSecili) + sesNot;
-                MetinleriYenile();
                 AyarYaz();
             }
             catch (Exception ex)
@@ -823,9 +732,9 @@ namespace CaptureIzle
             }
         }
 
-        // Akıcı mod grafiği: kart -> (MJPG çözücü) -> kare yakalayıcı (RGB32) -> boş çizici.
-        // Kareleri Sunucu alır ve kendi zamanlamasıyla OpenGL ile çizer.
-        void AkiciBagla()
+        // Görüntü grafiği: kart -> (MJPG çözücü) -> kare yakalayıcı (RGB32) -> boş çizici.
+        // Kareleri Sunucu alır ve OpenGL ile çizer (akıcı modda eşit aralıklarla, değilse geldiği an).
+        void GoruntuBagla()
         {
             gFiltre = (IBaseFilter)Activator.CreateInstance(Type.GetTypeFromCLSID(G.SampleGrabber));
             var sg = (ISampleGrabber)gFiltre;
@@ -916,15 +825,6 @@ namespace CaptureIzle
         void Durdur()
         {
             try { if (kontrol != null) kontrol.Stop(); } catch { }
-            try
-            {
-                if (pencere != null)
-                {
-                    pencere.put_Visible(0);
-                    pencere.put_Owner(IntPtr.Zero);
-                }
-            }
-            catch { }
             if (sunucu != null)
             {
                 try { ((ISampleGrabber)gFiltre).SetCallback(null, 1); } catch { }
@@ -932,10 +832,10 @@ namespace CaptureIzle
                 sunucu = null;
             }
             if (panel != null) panel.Visible = false;
-            foreach (object o in new object[] { aFiltre, vFiltre, rFiltre, gFiltre, nFiltre, yapici, graf })
+            foreach (object o in new object[] { aFiltre, vFiltre, gFiltre, nFiltre, yapici, graf })
                 if (o != null) try { Marshal.ReleaseComObject(o); } catch { }
-            graf = null; yapici = null; kontrol = null; pencere = null; ses = null;
-            vFiltre = null; aFiltre = null; rFiltre = null; kalite = null; gFiltre = null; nFiltre = null;
+            graf = null; yapici = null; kontrol = null; ses = null;
+            vFiltre = null; aFiltre = null; gFiltre = null; nFiltre = null;
         }
 
         void Hata(string s)
@@ -950,24 +850,8 @@ namespace CaptureIzle
         // ------------------------------------------------ yerleşim, tuşlar, menü
         void Yerlestir()
         {
-            int cw = ClientSize.Width, ch = ClientSize.Height;
             FpsKonumla();
-            if (sunucu != null) sunucu.Doldur = tamEkran && doldur; // akıcı modda yerleşimi çizici yapar
-            if (pencere == null || cw <= 0 || ch <= 0) return;
-            if (tamEkran && doldur)
-            {
-                pencere.SetWindowPosition(0, 0, cw, ch); // bütün ekranı kapla
-            }
-            else
-            {
-                int w = cw, h = (int)((long)cw * vidH / vidW);
-                if (h > ch) { h = ch; w = (int)((long)ch * vidW / vidH); }
-                pencere.SetWindowPosition((cw - w) / 2, (ch - h) / 2, w, h);
-            }
-            // Butonlar video penceresinin üstünde kalsın
-            ayarBtn.BringToFront();
-            sesBar.BringToFront();
-            if (mesaj.Visible) mesaj.BringToFront();
+            if (sunucu != null) sunucu.Doldur = tamEkran && doldur; // yerleşimi (oran/doldur) çizici yapar
         }
 
         // FPS katmanını pencerenin sağ üst köşesine sabitle
@@ -1016,7 +900,7 @@ namespace CaptureIzle
 
         void FpsGorunurluk()
         {
-            bool goster = Calisiyor && (fpsMod == 2 || (fpsMod == 1 && arayuzAcik));
+            bool goster = sunucu != null && (fpsMod == 2 || (fpsMod == 1 && arayuzAcik));
             goster = goster && WindowState != FormWindowState.Minimized && Visible;
             if (goster && !fpsK.Visible)
             {
@@ -1029,11 +913,9 @@ namespace CaptureIzle
 
         void KeskinlikAyarla(int seviye)
         {
-            bool eskiYol = GpuYolu;
             keskin = Math.Max(0, Math.Min(3, seviye));
             AyarYaz();
-            if (GpuYolu != eskiYol) Baslat();                          // çizim yolu değişti: yeniden kur
-            else if (sunucu != null) sunucu.Keskinlik = KeskinGuc(keskin); // anında uygula
+            if (sunucu != null) sunucu.Keskinlik = KeskinGuc(keskin); // yeniden başlatmadan anında uygula
             AyarButonuGoster();
         }
 
@@ -1080,10 +962,12 @@ namespace CaptureIzle
             }
             if (tamEkran && bosta) ImlecGoster(false);
 
+            // OpenGL başlatılamadıysa (eski/bozuk sürücü) siyah ekran yerine sebebini göster
+            if (sunucu != null && sunucu.HataMetni != null) { string h = sunucu.HataMetni; Durdur(); Hata(Dil.T("Görüntü çizilemedi: ", "Could not draw video: ") + h); }
+
             FpsGorunurluk();
-            if (!Calisiyor || fpsMod == 0) return;
-            int kare;
-            if (!KareSay(out kare)) { fpsK.Ayarla("-- FPS", Color.White); return; }
+            if (sunucu == null || fpsMod == 0) return;
+            int kare = sunucu.Cizilen;
             DateTime simdi = DateTime.Now;
             if (sonKare < 0 || kare < sonKare) { sonKare = kare; sonOlcum = simdi; return; }
             double sn = (simdi - sonOlcum).TotalSeconds;
@@ -1267,8 +1151,6 @@ namespace CaptureIzle
             m.Show(this, yer);
         }
 
-        string baslikEk;
-
         void MetinleriYenile()
         {
             ayarBtn.Text = Dil.T("⚙  Ayarlar", "⚙  Settings");
@@ -1339,66 +1221,8 @@ namespace CaptureIzle
             base.OnFormClosing(e);
         }
 
-        // ------------------------------------------------ test modu
-        public List<string> FormatAdlari() { return formatlar.ConvertAll(x => x.Ad); }
+        // ------------------------------------------------ test modu (--test)
         public string FpsMetni { get { return fpsK.Metin; } }
-        public string CiziciNotu { get { return sunucu == null ? "DirectShow çizici" : "GPU, " + sunucu.ShaderNotu + (sunucu.HataMetni != null ? ", HATA: " + sunucu.HataMetni : ""); } }
-
-        // Kare aralıklarını ölçer: ortalama, sapma, takılma sayısı, CPU kullanımı
-        public string Olc(double saniye)
-        {
-            int son;
-            if (!KareSay(out son)) return "ölçülemedi (çizici yok)";
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < 1500) { Application.DoEvents(); System.Threading.Thread.Sleep(1); } // ısınma
-            var proc = System.Diagnostics.Process.GetCurrentProcess();
-            TimeSpan cpu0 = proc.TotalProcessorTime;
-            int d0 = 0, tk0 = 0;
-            if (sunucu != null) { d0 = sunucu.Atilan; tk0 = sunucu.Tekrar; } else kalite.get_FramesDroppedInRenderer(out d0);
-            var araliklar = new List<double>();
-            KareSay(out son);
-            sw.Restart();
-            double sonZaman = 0;
-            bool ilk = true;
-            while (sw.Elapsed.TotalSeconds < saniye)
-            {
-                int k;
-                KareSay(out k);
-                if (k != son)
-                {
-                    double t = sw.Elapsed.TotalMilliseconds;
-                    if (!ilk) araliklar.Add((t - sonZaman) / (k - son));
-                    for (int i = 1; i < k - son; i++) araliklar.Add((t - sonZaman) / (k - son));
-                    ilk = false; sonZaman = t; son = k;
-                }
-                Application.DoEvents();
-            }
-            proc.Refresh();
-            double cpu = (proc.TotalProcessorTime - cpu0).TotalMilliseconds / (sw.Elapsed.TotalMilliseconds * Environment.ProcessorCount) * 100;
-            int d1 = 0, tk1 = 0;
-            if (sunucu != null) { d1 = sunucu.Atilan; tk1 = sunucu.Tekrar; } else kalite.get_FramesDroppedInRenderer(out d1);
-            if (araliklar.Count < 2) return "kare gelmedi" + (sunucu != null && sunucu.HataMetni != null ? " (" + sunucu.HataMetni + ")" : "");
-            double ort = 0; foreach (double a in araliklar) ort += a; ort /= araliklar.Count;
-            double var = 0; foreach (double a in araliklar) var += (a - ort) * (a - ort);
-            double sapma = Math.Sqrt(var / araliklar.Count);
-            int takilma = araliklar.FindAll(a => a > ort * 1.6).Count;
-            double enUzun = 0; foreach (double a in araliklar) enUzun = Math.Max(enUzun, a);
-            // Aralık dağılımı (1 ms'lik kovalar): ekran yenilemesine kilitlenme var mı?
-            var kova = new SortedDictionary<int, int>();
-            foreach (double a in araliklar) { int k = (int)Math.Round(a); int n; kova.TryGetValue(k, out n); kova[k] = n + 1; }
-            var dag = new StringBuilder();
-            foreach (var kv in kova) if (kv.Value * 100 >= araliklar.Count * 3) dag.Append(kv.Key + "ms:%" + (kv.Value * 100 / araliklar.Count) + " ");
-            return string.Format("{0:0.0} FPS | kare arası ort {1:0.00} ms, sapma {2:0.00} ms, en uzun {3:0.0} ms | takılma (>1.6x) {4} | atılan {5}, tekrar {8} | CPU %{6:0.0} | dağılım: {7}",
-                1000 / ort, ort, sapma, enUzun, takilma, d1 - d0, cpu, dag, tk1 - tk0);
-        }
-        public int tamponMs = 0;      // 0 = saat kapalı (normal), -1 = saat açık (yalnızca ölçüm için)
-
-        public void Dene(string format, bool sesli)
-        {
-            fSecili = format;
-            if (!sesli) aSecili = "";
-            Baslat();
-        }
 
         public static string CihazRaporu()
         {
@@ -1446,30 +1270,6 @@ namespace CaptureIzle
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            if (args.Length > 0 && args[0] == "--olc")
-            {
-                // Her format için kare zamanlamasını ölçer, olcum.txt'ye yazar
-                string yol = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "olcum.txt");
-                var f = new AnaForm();
-                f.Shown += (s, e) =>
-                {
-                    var sb = new StringBuilder();
-                    for (int i = 1; i < args.Length; i++)
-                    {
-                        if (args[i].StartsWith("tampon=")) { f.tamponMs = int.Parse(args[i].Substring(7)); continue; }
-                        if (args[i].StartsWith("akici=")) { f.akici = args[i] == "akici=1"; continue; }
-                        if (args[i].StartsWith("keskin=")) { f.keskin = int.Parse(args[i].Substring(7)); continue; }
-                        f.Dene(args[i], false);
-                        string sonuc = f.Olc(8);
-                        sb.AppendLine("[" + (f.akici ? "akıcı" : "düşük gecikme") + ", keskin " + f.keskin + ", " + f.CiziciNotu + "] " + args[i] + " -> " + sonuc);
-                    }
-                    File.WriteAllText(yol, sb.ToString(), Encoding.UTF8);
-                    f.Close();
-                };
-                Application.Run(f);
-                return;
-            }
-
             if (args.Length > 0 && args[0] == "--test")
             {
                 // Pencereyi kısa süre açar, ne olduğunu test-sonuc.txt dosyasına yazar
@@ -1478,23 +1278,11 @@ namespace CaptureIzle
                 try { rapor = AnaForm.CihazRaporu(); } catch (Exception ex) { rapor = "Cihaz listesi alınamadı: " + ex.Message + "\r\n"; }
                 var f = new AnaForm();
                 var t = new Timer();
-                t.Interval = 2500;
-                List<string> sira = null;
-                int adim = 0;
-                var sb = new StringBuilder(rapor);
+                t.Interval = 4000;
                 t.Tick += (s, e) =>
                 {
-                    if (sira == null)
-                    {
-                        sb.AppendLine("Varsayılan (sesli): " + f.Durum + " | sayaç: " + f.FpsMetni);
-                        sira = f.FormatAdlari();
-                        sb.AppendLine("Formatlar: " + string.Join(", ", sira));
-                    }
-                    else sb.AppendLine("  " + sira[adim - 1] + " (sessiz) -> " + f.Durum + " | sayaç: " + f.FpsMetni);
-                    int sinir = args.Length > 1 ? sira.Count : 0; // "--test hepsi" bütün formatları dener
-                    if (adim < sinir) { f.Dene(sira[adim], false); adim++; return; }
                     t.Stop();
-                    File.WriteAllText(yol, sb.ToString(), Encoding.UTF8);
+                    File.WriteAllText(yol, rapor + "Durum: " + f.Durum + " | sayaç: " + f.FpsMetni + Environment.NewLine, Encoding.UTF8);
                     f.Close();
                 };
                 t.Start();
