@@ -1,0 +1,8 @@
+# Derleme çıktısı (Releases sayfasından indirilir)
+*.exe
+
+# Kişisel ayarlar ve test çıktıları
+*.ayar
+test-sonuc.txt
+olcum.txt
+keskinlestirme-karsilastirma.png
