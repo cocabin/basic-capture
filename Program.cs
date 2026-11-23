@@ -492,6 +492,8 @@ namespace CaptureIzle
         Sunucu sunucu;
         GoruntuPaneli panel;
         bool akici;
+        int araKare;     // ara kare çarpanı: 0 = kapalı, 2/3/4 = her gerçek karenin arasına 1/2/3 üretilmiş kare
+        bool araKalite;  // yüksek kalite: daha küçük hareket blokları (8x8)
         int keskin; // 0 = kapalı, 1 = hafif, 2 = orta, 3 = güçlü
         static float KeskinGuc(int seviye) { return seviye <= 0 ? 0f : seviye == 1 ? 0.3f : seviye == 2 ? 0.6f : 1f; }
 
@@ -773,7 +775,7 @@ namespace CaptureIzle
 
             panel.Visible = true;
             panel.SendToBack();
-            sunucu = new Sunucu(panel.Handle, gw, gh, hedefFps > 0 ? hedefFps : 30, asagidanYukari, akici);
+            sunucu = new Sunucu(panel.Handle, gw, gh, hedefFps > 0 ? hedefFps : 30, asagidanYukari, akici, araKare, araKalite);
             sunucu.Doldur = tamEkran && doldur;
             sunucu.Keskinlik = KeskinGuc(keskin);
             sg.SetBufferSamples(0);
@@ -919,6 +921,15 @@ namespace CaptureIzle
             AyarButonuGoster();
         }
 
+        void AraKareAyarla(int carpan, bool yuksek)
+        {
+            araKare = carpan < 2 ? 0 : carpan;
+            araKalite = yuksek;
+            AyarYaz();
+            Baslat();
+            AyarButonuGoster();
+        }
+
         void AkiciDegistir()
         {
             akici = !akici;
@@ -973,11 +984,12 @@ namespace CaptureIzle
             double sn = (simdi - sonOlcum).TotalSeconds;
             if (sn < 0.5) return;
             double fps = (kare - sonKare) / sn;
+            int hedef = hedefFps * sunucu.Carpan; // sayaç rengi: ara kare açıksa hedef çarpan kadar
             sonKare = kare; sonOlcum = simdi;
             fpsK.Ayarla(Math.Round(fps).ToString("0") + " FPS",
                         // Yeşil: seçilen hıza ulaşıyor, sarı: biraz düşük, kırmızı: çok düşük
-                        fps >= hedefFps * 0.9 ? Color.FromArgb(80, 230, 120)
-                      : fps >= hedefFps * 0.6 ? Color.FromArgb(240, 200, 70)
+                        fps >= hedef * 0.9 ? Color.FromArgb(80, 230, 120)
+                      : fps >= hedef * 0.6 ? Color.FromArgb(240, 200, 70)
                       : Color.FromArgb(240, 90, 80));
             FpsKonumla();
         }
@@ -992,6 +1004,7 @@ namespace CaptureIzle
             else if (e.KeyCode == Keys.Down || e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract) SesDegistir(-5);
             else if (e.KeyCode == Keys.I) { fpsMod = (fpsMod + 1) % 3; AyarYaz(); FpsGorunurluk(); }
             else if (e.KeyCode == Keys.A) AkiciDegistir();
+            else if (e.KeyCode == Keys.G) AraKareAyarla(araKare >= 4 ? 0 : araKare < 2 ? 2 : araKare + 1, araKalite); // Kapalı > 2x > 3x > 4x
             else if (e.KeyCode == Keys.K) KeskinlikAyarla((keskin + 1) % 4);
             else if (e.KeyCode == Keys.D) { doldur = !doldur; Yerlestir(); AyarYaz(); }
             else if (e.KeyCode == Keys.S) MenuGoster(new Point(ayarBtn.Left, ayarBtn.Bottom + 4));
@@ -1094,6 +1107,23 @@ namespace CaptureIzle
             akIt.ShortcutKeyDisplayString = "A";
             akIt.Checked = akici;
             m.Items.Add(akIt);
+            var arIt = new ToolStripMenuItem(Dil.T("Ara kare üretimi", "Frame generation"));
+            arIt.ShortcutKeyDisplayString = "G";
+            foreach (int c in new[] { 0, 2, 3, 4 })
+            {
+                int cc = c;
+                var it = new ToolStripMenuItem(c == 0 ? Dil.T("Kapalı", "Off") : c + "x  (" + hedefFps + " → " + hedefFps * c + " FPS)", null, (s, e) => AraKareAyarla(cc, araKalite));
+                it.Checked = araKare == c || (c == 0 && araKare < 2);
+                arIt.DropDownItems.Add(it);
+            }
+            arIt.DropDownItems.Add(new ToolStripSeparator());
+            var nkIt = new ToolStripMenuItem(Dil.T("Kalite: Normal", "Quality: Normal"), null, (s, e) => AraKareAyarla(araKare, false));
+            nkIt.Checked = !araKalite;
+            var ykIt = new ToolStripMenuItem(Dil.T("Kalite: Yüksek (daha ince hareket, daha çok GPU)", "Quality: High (finer motion, more GPU)"), null, (s, e) => AraKareAyarla(araKare, true));
+            ykIt.Checked = araKalite;
+            arIt.DropDownItems.Add(nkIt);
+            arIt.DropDownItems.Add(ykIt);
+            m.Items.Add(arIt);
             var keIt = new ToolStripMenuItem(Dil.T("Keskinleştirme", "Sharpening"));
             keIt.ShortcutKeyDisplayString = "K";
             string[] keAd = { Dil.T("Kapalı", "Off"), Dil.T("Hafif", "Light"), Dil.T("Orta", "Medium"), Dil.T("Güçlü", "Strong") };
@@ -1194,6 +1224,8 @@ namespace CaptureIzle
                     else if (k == "seviye") { int x; if (int.TryParse(v, out x)) seviye = Math.Max(0, Math.Min(100, x)); }
                     else if (k == "sessiz") sessiz = v == "1";
                     else if (k == "akici") akici = v == "1";
+                    else if (k == "arakare") { int x; if (int.TryParse(v, out x)) araKare = x == 1 ? 2 : Math.Max(0, Math.Min(4, x)); } // eski "1" = 2x
+                    else if (k == "arakalite") araKalite = v == "1";
                     else if (k == "keskin") { int x; if (int.TryParse(v, out x)) keskin = Math.Max(0, Math.Min(3, x)); }
                     else if (k == "doldur") doldur = v != "0";
                     else if (k == "dil") Dil.En = v == "en";
@@ -1208,7 +1240,7 @@ namespace CaptureIzle
             {
                 File.WriteAllLines(ayarDosyasi, new[] { "video=" + vSecili, "ses=" + aSecili, "format=" + fSecili,
                     "fps=" + fpsMod, "doldur=" + (doldur ? "1" : "0"), "dil=" + (Dil.En ? "en" : "tr"),
-                    "seviye=" + seviye, "sessiz=" + (sessiz ? "1" : "0"), "akici=" + (akici ? "1" : "0"), "keskin=" + keskin }, Encoding.UTF8);
+                    "seviye=" + seviye, "sessiz=" + (sessiz ? "1" : "0"), "akici=" + (akici ? "1" : "0"), "keskin=" + keskin, "arakare=" + araKare, "arakalite=" + (araKalite ? "1" : "0") }, Encoding.UTF8);
             }
             catch { }
         }

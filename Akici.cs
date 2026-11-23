@@ -114,6 +114,14 @@ namespace CaptureIzle
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glUniform1fD(int yer, float v);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glUniform2fD(int yer, float a, float b);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glDeleteProgramD(uint p);
+        // Ara kare için: dokuya çizim (FBO), çoklu doku, mipmap (OpenGL 3.0)
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glActiveTextureD(uint birim);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glGenFramebuffersD(int n, out uint f);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glBindFramebufferD(uint hedef, uint f);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glFramebufferTexture2DD(uint hedef, uint ek, uint dokuHedef, uint doku, int sev);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate uint glCheckFramebufferStatusD(uint hedef);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glGenerateMipmapD(uint hedef);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void glDeleteFramebuffersD(int n, ref uint f);
 
         static T Fonk<T>(string ad) where T : class
         {
@@ -123,17 +131,183 @@ namespace CaptureIzle
             return Marshal.GetDelegateForFunctionPointer(p, typeof(T)) as T;
         }
 
-        const string KoseShader =
-            "void main(){ gl_TexCoord[0] = gl_MultiTexCoord0; gl_Position = ftransform(); }";
+        // ---- AMD FidelityFX Super Resolution 1 (FSR 1): EASU büyütme + RCAS keskinleştirme
+        // GLSL'e çevrilmiştir. Orijinal: AMD FidelityFX FSR 1 (ffx_fsr1.h)
+        // Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved. MIT lisansı:
+        // Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+        // documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+        // the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+        // permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright
+        // notice and this permission notice shall be included in all copies or substantial portions of the Software.
+        // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
 
-        // Catmull-Rom büyütme (bilinear örneklerle 9 dokunuş) + AMD FidelityFX CAS keskinleştirme.
-        // CAS: komşulara göre yerel kontrastı ölçer, zaten keskin kenarları ve düz alanları daha az işler.
-        const string PikselShader = @"
+        // EASU: 12 komşu pikselden kenarın yönünü ve uzunluğunu bulur, o yöne uzatılmış bir filtreyle büyütür.
+        const string EasuShader = @"#version 130
 uniform sampler2D tex;
-uniform vec2 texel;
-uniform float guc;
-vec3 catmullRom(vec2 uv) {
-    vec2 p = uv / texel;
+uniform vec2 girdi;
+uniform vec2 cikti;
+float L(vec3 c) { return c.b * 0.5 + (c.r * 0.5 + c.g); }
+vec3 T(ivec2 p) { return texelFetch(tex, clamp(p, ivec2(0), ivec2(girdi) - 1), 0).rgb; }
+void kur(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {
+    float lenX = 1.0 / max(max(abs(lD - lC), abs(lC - lB)), 1e-5);
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    lenX = clamp(abs(dirX) * lenX, 0.0, 1.0); len += lenX * lenX * w;
+    float lenY = 1.0 / max(max(abs(lE - lC), abs(lC - lA)), 1e-5);
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    lenY = clamp(abs(dirY) * lenY, 0.0, 1.0); len += lenY * lenY * w;
+}
+void tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c) {
+    vec2 v = vec2(off.x * dir.x + off.y * dir.y, off.x * -dir.y + off.y * dir.x) * len2;
+    float d2 = min(dot(v, v), clp);
+    float wB = 0.4 * d2 - 1.0, wA = lob * d2 - 1.0;
+    wB *= wB; wA *= wA;
+    float w = (1.5625 * wB - 0.5625) * wA;
+    aC += c * w; aW += w;
+}
+void main() {
+    vec2 pp = gl_FragCoord.xy * (girdi / cikti) - 0.5;
+    vec2 fp = floor(pp); pp -= fp;
+    ivec2 i = ivec2(fp);
+    vec3 b = T(i + ivec2(0, -1)), c = T(i + ivec2(1, -1));
+    vec3 e = T(i + ivec2(-1, 0)), f = T(i), g = T(i + ivec2(1, 0)), h = T(i + ivec2(2, 0));
+    vec3 q = T(i + ivec2(-1, 1)), j = T(i + ivec2(0, 1)), k = T(i + ivec2(1, 1)), l = T(i + ivec2(2, 1));
+    vec3 n = T(i + ivec2(0, 2)), o = T(i + ivec2(1, 2));
+    float bL = L(b), cL = L(c), eL = L(e), fL = L(f), gL = L(g), hL = L(h);
+    float qL = L(q), jL = L(j), kL = L(k), lL = L(l), nL = L(n), oL = L(o);
+    vec2 dir = vec2(0.0); float len = 0.0;
+    kur(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+    kur(dir, len, pp.x * (1.0 - pp.y),         cL, fL, gL, hL, kL);
+    kur(dir, len, (1.0 - pp.x) * pp.y,         fL, qL, jL, kL, nL);
+    kur(dir, len, pp.x * pp.y,                 gL, jL, kL, lL, oL);
+    float dirR = dot(dir, dir);
+    bool sifir = dirR < 1.0 / 32768.0;
+    dirR = sifir ? 1.0 : inversesqrt(dirR);
+    dir.x = sifir ? 1.0 : dir.x;
+    dir *= dirR;
+    len = len * 0.5; len *= len;
+    float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+    vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+    float clp = 1.0 / lob;
+    vec3 aC = vec3(0.0); float aW = 0.0;
+    tap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, b);
+    tap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, c);
+    tap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, q);
+    tap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, j);
+    tap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, f);
+    tap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, e);
+    tap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, k);
+    tap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, l);
+    tap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, h);
+    tap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, g);
+    tap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, o);
+    tap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, n);
+    vec3 mn4 = min(min(f, g), min(j, k)), mx4 = max(max(f, g), max(j, k));
+    gl_FragColor = vec4(min(mx4, max(mn4, aC / aW)), 1.0); // halka (ringing) olmasın
+}";
+
+        // RCAS: ekran çözünürlüğünde, komşulara göre aşırıya kaçmayan (kenarda halka yapmayan) keskinleştirme.
+        const string RcasShader = @"#version 130
+uniform sampler2D tex;
+uniform vec2 ofs;
+uniform vec2 boyut;
+uniform float ters;
+uniform float keskin;
+vec3 T(ivec2 p) { return texelFetch(tex, clamp(p, ivec2(0), ivec2(boyut) - 1), 0).rgb; }
+void main() {
+    vec2 ip = floor(gl_FragCoord.xy - ofs);
+    if (ters > 0.5) ip.y = boyut.y - 1.0 - ip.y;
+    ivec2 p = ivec2(ip);
+    vec3 b = T(p + ivec2(0, -1)), d = T(p + ivec2(-1, 0)), e = T(p), f = T(p + ivec2(1, 0)), h = T(p + ivec2(0, 1));
+    vec3 mn4 = min(min(b, d), min(f, h)), mx4 = max(max(b, d), max(f, h));
+    vec3 hitMin = min(mn4, e) / max(4.0 * mx4, vec3(1e-5));
+    vec3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3(-1e-5));
+    vec3 lobeRGB = max(-hitMin, hitMax);
+    float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * keskin;
+    gl_FragColor = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), 1.0);
+}";
+
+        // ---- Ara kare üretimi (30 -> 60): blok eşleme ile hareket tahmini + hareket yönünde harmanlama
+        const string KoseShader130 =
+            "#version 130\nvoid main(){ gl_TexCoord[0] = gl_MultiTexCoord0; gl_Position = ftransform(); }";
+
+        // Her piksel = 16x16'lık bir blok. Önceki (A) ve yeni (B) karede bloğun nereye kaydığını arar:
+        // önce bulanık (mip 3) görüntüde ±48 px kaba arama, sonra mip 1'de ±4 px, sonra tam çözünürlükte ±1 px.
+        const string HareketShader = @"#version 130
+uniform sampler2D A;
+uniform sampler2D B;
+uniform vec2 px;
+uniform float blokPx;
+float parlak(sampler2D s, vec2 uv, float lod) { return dot(textureLod(s, uv, lod).rgb, vec3(0.299, 0.587, 0.114)); }
+// Blok içinde 8x8 noktada fark + hareketin uzunluğuna küçük ceza: seyrek dokuda (çim, kalabalık) noktaların
+// çoğu düz alana denk gelir ve her hareket 'doğru' görünür; ceza belirsizlikte küçük hareketi seçtirir.
+float fark(vec2 uv, vec2 d, float lod) {
+    float s = 0.0;
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++) {
+            vec2 o = (vec2(float(x), float(y)) - 3.5) * (blokPx / 8.0) * px;
+            s += abs(parlak(A, uv + o, lod) - parlak(B, uv + o + d * px, lod));
+        }
+    return s / 64.0 + 0.0004 * length(d);
+}
+void main() {
+    vec2 uv = gl_TexCoord[0].st;
+    // Kaba-ince arama: her aşama bir öncekinin hatasını düzeltebilecek kadar geniş bakar.
+    // (Mip 3'te ince doku, ör. çim, kaybolur; ara aşama olmadan hareket hiç bulunamıyordu.)
+    vec2 en = vec2(0.0);
+    float es = fark(uv, en, 3.0);
+    for (int y = -6; y <= 6; y++)                 // mip 3: ±48 px, 8 px adım
+        for (int x = -6; x <= 6; x++) {
+            vec2 d = vec2(float(x), float(y)) * 8.0;
+            float s = fark(uv, d, 3.0);
+            if (s < es) { es = s; en = d; }
+        }
+    vec2 c = en; es = fark(uv, c, 2.0);
+    for (int y = -2; y <= 2; y++)                 // mip 2: ±8 px, 4 px adım
+        for (int x = -2; x <= 2; x++) {
+            vec2 d = c + vec2(float(x), float(y)) * 4.0;
+            float s = fark(uv, d, 2.0);
+            if (s < es) { es = s; en = d; }
+        }
+    c = en; es = fark(uv, c, 1.0);
+    for (int y = -2; y <= 2; y++)                 // mip 1: ±4 px, 2 px adım
+        for (int x = -2; x <= 2; x++) {
+            vec2 d = c + vec2(float(x), float(y)) * 2.0;
+            float s = fark(uv, d, 1.0);
+            if (s < es) { es = s; en = d; }
+        }
+    c = en; es = fark(uv, c, 0.0);
+    for (int y = -2; y <= 2; y++)                 // tam çözünürlük: ±2 px, 1 px adım
+        for (int x = -2; x <= 2; x++) {
+            vec2 d = c + vec2(float(x), float(y));
+            float s = fark(uv, d, 0.0);
+            if (s < es) { es = s; en = d; }
+        }
+    float s0 = fark(uv, vec2(0.0), 0.0) * 0.9;    // hareketsizliğe hafif öncelik: düz alanlar titremesin
+    if (s0 <= es) { es = s0; en = vec2(0.0); }
+    gl_FragColor = vec4(en, es, 1.0);
+}";
+
+        // Ara kare: her pikseli hareket yönünde iki kareden alıp ortalar.
+        // - Örnekler Catmull-Rom ile okunur: yarım piksel kaymada bilinear bulanıklaştırır ve ara kareler
+        //   gerçeklerden yumuşak kalınca görüntü titrer.
+        // - İki kare uyuşmuyorsa (yeni beliren nesne, yanlış vektör) kaydırmasız yumuşak karışıma geçer;
+        //   yeni kareyi erken göstermek o bölgede takılma yaratır. Eşik, MJPG gürültüsünün üstünde.
+        const string AraShader = @"#version 130
+uniform sampler2D A;
+uniform sampler2D B;
+uniform sampler2D MV;
+uniform vec2 px;
+uniform vec2 blok;
+uniform float t;
+vec2 orta3(vec2 a, vec2 b, vec2 c) { return max(min(a, b), min(max(a, b), c)); }
+// Blok vektörü, yumuşatmadan (tam değer): kenarda 32 ile 0 yan yana gelince bilinear okuma 16 gibi
+// ikisi de yanlış bir değer üretip doğru adayı listeden düşürüyordu.
+vec2 blokMV(ivec2 b) { return texelFetch(MV, clamp(b, ivec2(0), ivec2(round(1.0 / blok)) - 1), 0).xy; }
+vec3 cr(sampler2D s, vec2 uv) {
+    vec2 p = uv / px;
     vec2 t1 = floor(p - 0.5) + 0.5;
     vec2 f = p - t1;
     vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
@@ -141,44 +315,72 @@ vec3 catmullRom(vec2 uv) {
     vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
     vec2 w3 = f * f * (-0.5 + 0.5 * f);
     vec2 w12 = w1 + w2;
-    vec2 a = (t1 - 1.0) * texel;
-    vec2 b = (t1 + w2 / w12) * texel;
-    vec2 c = (t1 + 2.0) * texel;
-    vec3 r = texture2D(tex, vec2(a.x, a.y)).rgb * (w0.x * w0.y)
-           + texture2D(tex, vec2(b.x, a.y)).rgb * (w12.x * w0.y)
-           + texture2D(tex, vec2(c.x, a.y)).rgb * (w3.x * w0.y)
-           + texture2D(tex, vec2(a.x, b.y)).rgb * (w0.x * w12.y)
-           + texture2D(tex, vec2(b.x, b.y)).rgb * (w12.x * w12.y)
-           + texture2D(tex, vec2(c.x, b.y)).rgb * (w3.x * w12.y)
-           + texture2D(tex, vec2(a.x, c.y)).rgb * (w0.x * w3.y)
-           + texture2D(tex, vec2(b.x, c.y)).rgb * (w12.x * w3.y)
-           + texture2D(tex, vec2(c.x, c.y)).rgb * (w3.x * w3.y);
+    vec2 a = (t1 - 1.0) * px, b = (t1 + w2 / w12) * px, c = (t1 + 2.0) * px;
+    vec3 r = textureLod(s, vec2(a.x, a.y), 0.0).rgb * (w0.x * w0.y)
+           + textureLod(s, vec2(b.x, a.y), 0.0).rgb * (w12.x * w0.y)
+           + textureLod(s, vec2(c.x, a.y), 0.0).rgb * (w3.x * w0.y)
+           + textureLod(s, vec2(a.x, b.y), 0.0).rgb * (w0.x * w12.y)
+           + textureLod(s, vec2(b.x, b.y), 0.0).rgb * (w12.x * w12.y)
+           + textureLod(s, vec2(c.x, b.y), 0.0).rgb * (w3.x * w12.y)
+           + textureLod(s, vec2(a.x, c.y), 0.0).rgb * (w0.x * w3.y)
+           + textureLod(s, vec2(b.x, c.y), 0.0).rgb * (w12.x * w3.y)
+           + textureLod(s, vec2(c.x, c.y), 0.0).rgb * (w3.x * w3.y);
     return clamp(r, 0.0, 1.0);
+}
+float parlak(sampler2D s, vec2 uv) { return dot(textureLod(s, uv, 0.0).rgb, vec3(0.299, 0.587, 0.114)); }
+// Aday hareketin bu pikselin çevresinde (5 noktalı artı) iki kareyi ne kadar iyi eşleştirdiği
+// Aday hareketin bu pikselin çevresinde (3x3 nokta, 5x5 px) iki kareyi ne kadar iyi eşleştirdiği
+float hata(vec2 uv, vec2 v) {
+    vec2 a = uv - v * t, b = uv + v * (1.0 - t);
+    float s = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            vec2 o = vec2(float(x), float(y)) * 2.0 * px;
+            s += abs(parlak(A, a + o) - parlak(B, b + o));
+        }
+    return s / 9.0;
 }
 void main() {
     vec2 uv = gl_TexCoord[0].st;
-    vec3 e = catmullRom(uv);
-    vec3 b = texture2D(tex, uv + vec2(0.0, -texel.y)).rgb;
-    vec3 d = texture2D(tex, uv + vec2(-texel.x, 0.0)).rgb;
-    vec3 f = texture2D(tex, uv + vec2( texel.x, 0.0)).rgb;
-    vec3 h = texture2D(tex, uv + vec2(0.0,  texel.y)).rgb;
-    vec3 mn = min(min(min(d, e), min(f, b)), h);
-    vec3 mx = max(max(max(d, e), max(f, b)), h);
-    vec3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, vec3(0.0001)), 0.0, 1.0));
-    vec3 w = amp * (-1.0 / mix(8.0, 5.0, guc));
-    vec3 sonuc = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);
-    gl_FragColor = vec4(clamp(sonuc, 0.0, 1.0), 1.0);
+    // Piksel başına hareket seçimi: blok kenarında (nesne sınırı) doğru komşunun hareketi, sabit yazı/HUD/skor için
+    // sıfır hareket seçilir. Bloğun tamamına tek vektör uygulamak kare kare bozulma (pikselleşme) yapıyordu.
+    ivec2 bi = ivec2(floor(uv / blok));
+    vec2 aday[7];
+    aday[1] = blokMV(bi);
+    aday[2] = blokMV(bi + ivec2(1, 0));
+    aday[3] = blokMV(bi - ivec2(1, 0));
+    aday[4] = blokMV(bi + ivec2(0, 1));
+    aday[5] = blokMV(bi - ivec2(0, 1));
+    aday[6] = vec2(0.0);
+    // Bloğun ve 4 komşusunun ortancası: tek başına yanlış çıkan blok vektörlerini eler
+    aday[0] = orta3(aday[1], max(min(aday[2], aday[3]), min(aday[4], aday[5])), min(max(aday[2], aday[3]), max(aday[4], aday[5])));
+    vec2 v = aday[0] * px;
+    float en = hata(uv, v), ec = en;
+    for (int i = 1; i < 7; i++) {
+        vec2 c = aday[i] * px;
+        float e2 = hata(uv, c);
+        // ortancadan sapan aday ancak belirgin şekilde daha iyiyse seçilir (düz alanda dokuyu silmesin)
+        float c2 = e2 + 0.01 + 0.0005 * length(aday[i] - aday[0]);
+        if (c2 < ec) { ec = c2; en = e2; v = c; }
+    }
+    vec3 a = cr(A, uv - v * t);
+    vec3 b = cr(B, uv + v * (1.0 - t));
+    vec3 yedek = mix(textureLod(A, uv, 0.0).rgb, textureLod(B, uv, 0.0).rgb, t);
+    gl_FragColor = vec4(mix(mix(a, b, t), yedek, smoothstep(0.10, 0.25, en)), 1.0);
 }";
 
-        uint program;
-        int yerTex = -1, yerTexel = -1, yerGuc = -1;
+        uint easuProg, rcasProg, hareketProg, araProg;
+        bool shaderHazir;      // FSR shader'ları derlendi (yoksa düz bilinear çizim)
+        uint fsrDoku;          // EASU çıktısı, ekrandaki görüntü boyutunda
+        int fsrW, fsrH;
         glUseProgramD glUseProgram;
         glUniform1iD glUniform1i;
         glUniform1fD glUniform1f;
         glUniform2fD glUniform2f;
         glDeleteProgramD glDeleteProgram;
+        glGetUniformLocationD glGetUniformLocation;
 
-        void ShaderHazirla()
+        uint ProgramDerle(string koseKod, string pikselKod)
         {
             var glCreateShader = Fonk<glCreateShaderD>("glCreateShader");
             var glShaderSource = Fonk<glShaderSourceD>("glShaderSource");
@@ -189,40 +391,151 @@ void main() {
             var glAttachShader = Fonk<glAttachShaderD>("glAttachShader");
             var glLinkProgram = Fonk<glLinkProgramD>("glLinkProgram");
             var glGetProgramiv = Fonk<glGetShaderivD>("glGetProgramiv");
-            var glGetUniformLocation = Fonk<glGetUniformLocationD>("glGetUniformLocation");
+
+            uint p = glCreateProgram();
+            string[] kodlar = { koseKod, pikselKod };
+            uint[] tipler = { 0x8B31, 0x8B30 }; // VERTEX_SHADER, FRAGMENT_SHADER
+            for (int i = 0; i < 2; i++)
+            {
+                uint sh = glCreateShader(tipler[i]);
+                glShaderSource(sh, 1, new[] { kodlar[i] }, null);
+                glCompileShader(sh);
+                int ok;
+                glGetShaderiv(sh, 0x8B81, out ok); // COMPILE_STATUS
+                if (ok == 0)
+                {
+                    var log = new System.Text.StringBuilder(2048); int n;
+                    glGetShaderInfoLog(sh, log.Capacity, out n, log);
+                    throw new Exception("shader: " + log);
+                }
+                glAttachShader(p, sh);
+            }
+            glLinkProgram(p);
+            int bagli;
+            glGetProgramiv(p, 0x8B82, out bagli); // LINK_STATUS
+            if (bagli == 0) throw new Exception("shader bağlanamadı");
+            return p;
+        }
+
+        void ShaderHazirla()
+        {
             glUseProgram = Fonk<glUseProgramD>("glUseProgram");
             glUniform1i = Fonk<glUniform1iD>("glUniform1i");
             glUniform1f = Fonk<glUniform1fD>("glUniform1f");
             glUniform2f = Fonk<glUniform2fD>("glUniform2f");
             glDeleteProgram = Fonk<glDeleteProgramD>("glDeleteProgram");
+            glGetUniformLocation = Fonk<glGetUniformLocationD>("glGetUniformLocation");
+            glActiveTexture = Fonk<glActiveTextureD>("glActiveTexture");
+            var glGenFramebuffers = Fonk<glGenFramebuffersD>("glGenFramebuffers");
+            glBindFramebuffer = Fonk<glBindFramebufferD>("glBindFramebuffer");
+            glFramebufferTexture2D = Fonk<glFramebufferTexture2DD>("glFramebufferTexture2D");
+            glCheckFramebufferStatus = Fonk<glCheckFramebufferStatusD>("glCheckFramebufferStatus");
+            glGenerateMipmap = Fonk<glGenerateMipmapD>("glGenerateMipmap");
+            glDeleteFramebuffers = Fonk<glDeleteFramebuffersD>("glDeleteFramebuffers");
+            easuProg = ProgramDerle(KoseShader130, EasuShader);
+            rcasProg = ProgramDerle(KoseShader130, RcasShader);
+            glGenFramebuffers(1, out fbo);
+            shaderHazir = true;
+        }
 
-            uint[] sh = new uint[2];
-            string[] kodlar = { KoseShader, PikselShader };
-            uint[] tipler = { 0x8B31, 0x8B30 }; // VERTEX_SHADER, FRAGMENT_SHADER
-            for (int i = 0; i < 2; i++)
+        // --- Ara kare kaynakları
+        const uint FB = 0x8D40, RENK0 = 0x8CE0, BIRIM0 = 0x84C0;
+        glActiveTextureD glActiveTexture;
+        glBindFramebufferD glBindFramebuffer;
+        glFramebufferTexture2DD glFramebufferTexture2D;
+        glGenerateMipmapD glGenerateMipmap;
+        glDeleteFramebuffersD glDeleteFramebuffers;
+        glCheckFramebufferStatusD glCheckFramebufferStatus;
+        uint fbo, araDoku, hareketDoku;
+        int bw, bh;   // hareket alanı boyutu (blok başına bir vektör)
+
+        uint YeniDoku(int dw, int dh, int ic, uint tip)
+        {
+            uint d;
+            glGenTextures(1, out d);
+            glBindTexture(TEX2D, d);
+            glTexParameteri(TEX2D, 0x2801, 0x2601); // MIN_FILTER = LINEAR
+            glTexParameteri(TEX2D, 0x2800, 0x2601); // MAG_FILTER = LINEAR
+            glTexParameteri(TEX2D, 0x2802, 0x812F); // WRAP_S = CLAMP_TO_EDGE
+            glTexParameteri(TEX2D, 0x2803, 0x812F); // WRAP_T = CLAMP_TO_EDGE
+            glTexImage2D(TEX2D, 0, ic, dw, dh, 0, BGRA, tip, IntPtr.Zero);
+            return d;
+        }
+
+        void AraKareHazirla()
+        {
+            hareketProg = ProgramDerle(KoseShader130, HareketShader);
+            araProg = ProgramDerle(KoseShader130, AraShader);
+            bw = (w + blokPx - 1) / blokPx; bh = (h + blokPx - 1) / blokPx;
+            araDoku = YeniDoku(w, h, (int)RGBA8, UBYTE);
+            hareketDoku = YeniDoku(bw, bh, 0x881A, 0x1406); // RGBA16F, FLOAT: piksel cinsinden vektör
+            foreach (uint d in new[] { araDoku, hareketDoku })
             {
-                sh[i] = glCreateShader(tipler[i]);
-                glShaderSource(sh[i], 1, new[] { kodlar[i] }, null);
-                glCompileShader(sh[i]);
-                int ok;
-                glGetShaderiv(sh[i], 0x8B81, out ok); // COMPILE_STATUS
-                if (ok == 0)
-                {
-                    var log = new System.Text.StringBuilder(2048); int n;
-                    glGetShaderInfoLog(sh[i], log.Capacity, out n, log);
-                    throw new Exception("shader: " + log);
-                }
+                glBindFramebuffer(FB, fbo);
+                glFramebufferTexture2D(FB, RENK0, TEX2D, d, 0);
+                if (glCheckFramebufferStatus(FB) != 0x8CD5) throw new Exception("FBO desteklenmiyor"); // COMPLETE
             }
-            program = glCreateProgram();
-            glAttachShader(program, sh[0]);
-            glAttachShader(program, sh[1]);
-            glLinkProgram(program);
-            int bagli;
-            glGetProgramiv(program, 0x8B82, out bagli); // LINK_STATUS
-            if (bagli == 0) throw new Exception("shader bağlanamadı");
-            yerTex = glGetUniformLocation(program, "tex");
-            yerTexel = glGetUniformLocation(program, "texel");
-            yerGuc = glGetUniformLocation(program, "guc");
+            glBindFramebuffer(FB, 0);
+        }
+
+        void Bagla(uint a, uint b)
+        {
+            glActiveTexture(BIRIM0 + 1); glBindTexture(TEX2D, b);
+            glActiveTexture(BIRIM0 + 2); glBindTexture(TEX2D, hareketDoku);
+            glActiveTexture(BIRIM0);     glBindTexture(TEX2D, a);
+            glBindFramebuffer(FB, fbo);
+        }
+
+        void Coz()
+        {
+            glBindFramebuffer(FB, 0);
+            glUseProgram(0);
+            glActiveTexture(BIRIM0 + 2); glBindTexture(TEX2D, 0);
+            glActiveTexture(BIRIM0 + 1); glBindTexture(TEX2D, 0);
+            glActiveTexture(BIRIM0);
+        }
+
+        // A (önceki) -> B (yeni) hareketini hareketDoku'ya yazar (her gerçek kare için bir kez)
+        void HareketHesapla(uint a, uint b)
+        {
+            Bagla(a, b);
+            glFramebufferTexture2D(FB, RENK0, TEX2D, hareketDoku, 0);
+            glViewport(0, 0, bw, bh);
+            glUseProgram(hareketProg);
+            glUniform1i(glGetUniformLocation(hareketProg, "A"), 0);
+            glUniform1i(glGetUniformLocation(hareketProg, "B"), 1);
+            glUniform2f(glGetUniformLocation(hareketProg, "px"), 1f / w, 1f / h);
+            glUniform1f(glGetUniformLocation(hareketProg, "blokPx"), blokPx);
+            Dortgen(0f, 1f);
+            Coz();
+        }
+
+        // A ile B arasında t (0..1) anındaki ara kareyi araDoku'ya çizer
+        void AraKareCiz(uint a, uint b, float t)
+        {
+            Bagla(a, b);
+            glFramebufferTexture2D(FB, RENK0, TEX2D, araDoku, 0);
+            glViewport(0, 0, w, h);
+            glUseProgram(araProg);
+            glUniform1i(glGetUniformLocation(araProg, "A"), 0);
+            glUniform1i(glGetUniformLocation(araProg, "B"), 1);
+            glUniform1i(glGetUniformLocation(araProg, "MV"), 2);
+            glUniform2f(glGetUniformLocation(araProg, "px"), 1f / w, 1f / h);
+            glUniform2f(glGetUniformLocation(araProg, "blok"), 1f / bw, 1f / bh);
+            glUniform1f(glGetUniformLocation(araProg, "t"), t);
+            Dortgen(0f, 1f);
+            Coz();
+        }
+
+        // Tüm alanı kaplayan dörtgen; alt/ust = dokunun dikey yönü
+        static void Dortgen(float alt, float ust)
+        {
+            glBegin(DORTGEN);
+            glTexCoord2f(0, alt); glVertex2f(-1, -1);
+            glTexCoord2f(1, alt); glVertex2f(1, -1);
+            glTexCoord2f(1, ust); glVertex2f(1, 1);
+            glTexCoord2f(0, ust); glVertex2f(-1, 1);
+            glEnd();
         }
 
         [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
@@ -257,12 +570,21 @@ void main() {
         public volatile float Keskinlik;   // 0 = kapalı (düz bilinear), 0..1 = keskinleştirme gücü
         public string HataMetni;
         readonly bool tamponlu;            // true = akıcı (eşit aralıklı), false = kare gelir gelmez çiz
+        readonly bool araKareIstek;        // gerçek karelerin arasına üretilmiş kare ekle
+        readonly int carpan;               // 2 = her gerçek kareye 1 ara kare, 3 = 2, 4 = 3
+        readonly int blokPx;               // hareket bloğu: 16 (normal) ya da 8 (yüksek kalite, 4 kat iş)
+        public volatile bool AraKareCalisiyor;
+        public int Carpan { get { return AraKareCalisiyor ? carpan : 1; } } // ekrana çıkan FPS / kaynak FPS
+        readonly uint[] kaynak = new uint[2]; // son iki gerçek kare (önceki / yeni)
 
-        public Sunucu(IntPtr hwnd, int w, int h, double fps, bool asagidanYukari, bool tamponlu)
+        public Sunucu(IntPtr hwnd, int w, int h, double fps, bool asagidanYukari, bool tamponlu, int carpan, bool yuksekKalite)
         {
             this.hwnd = hwnd; this.w = w; this.h = h;
             this.asagidanYukari = asagidanYukari;
-            this.tamponlu = tamponlu;
+            araKareIstek = carpan >= 2;
+            this.tamponlu = tamponlu || araKareIstek; // ara kare eşit aralıklı çizim gerektirir
+            this.carpan = Math.Max(1, Math.Min(4, carpan));
+            blokPx = yuksekKalite ? 8 : 16;
             boyut = w * h * 4;
             aralik = 1.0 / Math.Max(1, fps);
         }
@@ -309,7 +631,6 @@ void main() {
         void Dongu()
         {
             IntPtr dc = GetDC(hwnd), rc = IntPtr.Zero;
-            uint doku = 0;
             timeBeginPeriod(1);
             try
             {
@@ -324,19 +645,26 @@ void main() {
                 IntPtr sw = wglGetProcAddress("wglSwapIntervalEXT");
                 if (sw != IntPtr.Zero) ((SwapAraligi)Marshal.GetDelegateForFunctionPointer(sw, typeof(SwapAraligi)))(1); // yırtılma olmasın
 
-                glGenTextures(1, out doku);
-                glBindTexture(TEX2D, doku);
-                glTexParameteri(TEX2D, 0x2801, 0x2601); // MIN_FILTER = LINEAR
-                glTexParameteri(TEX2D, 0x2800, 0x2601); // MAG_FILTER = LINEAR
-                glTexParameteri(TEX2D, 0x2802, 0x812F); // WRAP_S = CLAMP_TO_EDGE
-                glTexParameteri(TEX2D, 0x2803, 0x812F); // WRAP_T = CLAMP_TO_EDGE
-                glPixelStorei(0x0CF5, 4);               // UNPACK_ALIGNMENT
-                glTexImage2D(TEX2D, 0, (int)RGBA8, w, h, 0, BGRA, UBYTE, IntPtr.Zero);
+                glPixelStorei(0x0CF5, 4); // UNPACK_ALIGNMENT
+                kaynak[0] = YeniDoku(w, h, (int)RGBA8, UBYTE);
+                kaynak[1] = YeniDoku(w, h, (int)RGBA8, UBYTE);
                 glEnable(TEX2D);
 
-                // Keskinleştirme shader'ı; derlenemezse düz çizime devam
+                // FSR 1 (keskinleştirme) shader'ları; derlenemezse düz çizime devam
                 try { ShaderHazirla(); }
-                catch { program = 0; } // shader yoksa keskinleştirmesiz düz çizim
+                catch { shaderHazir = false; } // shader yoksa keskinleştirmesiz düz çizim
+
+                // Ara kare: kurulamazsa (eski sürücü) normal akıcı moda düşer
+                if (araKareIstek && shaderHazir)
+                {
+                    try
+                    {
+                        AraKareHazirla();
+                        foreach (uint d in kaynak) { glBindTexture(TEX2D, d); glTexParameteri(TEX2D, 0x2801, 0x2703); } // MIN = LINEAR_MIPMAP_LINEAR
+                        AraKareCalisiyor = true;
+                    }
+                    catch { AraKareCalisiyor = false; }
+                }
 
                 if (!tamponlu)
                 {
@@ -349,15 +677,22 @@ void main() {
                 while (calis)
                 {
                     lock (kilit) if (kuyruk.Count >= 2) break;
-                    Ciz(dc, false);
+                    Ciz(dc, 0);
                     geldi.WaitOne(50);
                 }
 
+                // Ara kare açıksa her gerçek kare N adıma bölünür: [A..B arası 1/N, 2/N ... ara kareler, gerçek B], [B..C ...]
+                int n = Carpan;
+                double adim = aralik / n;
                 double sonraki = saat.Elapsed.TotalSeconds, ortKuyruk = 1.5;
                 IntPtr son = IntPtr.Zero;
+                int sonSlot = -1;          // en son yüklenen gerçek karenin dokusu
+                uint onceki = 0, yeniDoku = 0;
+                bool araGecerli = false;   // bu turda A..B arası ara kare üretilebilir mi
+                int adimNo = 0;
                 while (calis)
                 {
-                    // Bir sonraki kare zamanına kadar bekle (son milisaniyede hassas bekleme)
+                    // Bir sonraki adım zamanına kadar bekle (son milisaniyede hassas bekleme)
                     double simdi;
                     while (calis && (simdi = saat.Elapsed.TotalSeconds) < sonraki)
                     {
@@ -365,32 +700,55 @@ void main() {
                     }
                     if (!calis) break;
 
-                    IntPtr yeni = IntPtr.Zero;
-                    int q;
-                    lock (kilit)
+                    uint goster = sonSlot >= 0 ? kaynak[sonSlot] : 0;
+                    if (adimNo == 0)
                     {
-                        q = kuyruk.Count;
-                        if (q > 0)
+                        IntPtr yeni = IntPtr.Zero;
+                        int q;
+                        lock (kilit)
                         {
-                            yeni = kuyruk.Dequeue();
-                            while (kuyruk.Count > 2) havuz.Push(kuyruk.Dequeue()); // gecikme birikmesin
+                            q = kuyruk.Count;
+                            if (q > 0)
+                            {
+                                yeni = kuyruk.Dequeue();
+                                while (kuyruk.Count > 2) havuz.Push(kuyruk.Dequeue()); // gecikme birikmesin
+                            }
+                        }
+                        ortKuyruk = ortKuyruk * 0.97 + q * 0.03;
+
+                        araGecerli = false;
+                        if (yeni != IntPtr.Zero)
+                        {
+                            int slot = sonSlot < 0 ? 0 : 1 - sonSlot;
+                            glBindTexture(TEX2D, kaynak[slot]);
+                            glTexSubImage2D(TEX2D, 0, 0, 0, w, h, BGRA, UBYTE, yeni);
+                            lock (kilit) if (son != IntPtr.Zero) havuz.Push(son);
+                            son = yeni;
+                            if (n > 1)
+                            {
+                                glGenerateMipmap(TEX2D);
+                                if (sonSlot >= 0) { onceki = kaynak[sonSlot]; HareketHesapla(onceki, kaynak[slot]); araGecerli = true; }
+                            }
+                            sonSlot = slot;
+                            yeniDoku = kaynak[slot];
+                            if (araGecerli) { AraKareCiz(onceki, yeniDoku, 1f / n); goster = araDoku; }
+                            else goster = yeniDoku;
+                            Interlocked.Increment(ref Cizilen);
                         }
                     }
-                    ortKuyruk = ortKuyruk * 0.97 + q * 0.03;
-
-                    if (yeni != IntPtr.Zero)
+                    else if (araGecerli)
                     {
-                        glTexSubImage2D(TEX2D, 0, 0, 0, w, h, BGRA, UBYTE, yeni);
-                        lock (kilit) if (son != IntPtr.Zero) havuz.Push(son);
-                        son = yeni;
+                        if (adimNo < n - 1) { AraKareCiz(onceki, yeniDoku, (adimNo + 1f) / n); goster = araDoku; }
+                        else goster = yeniDoku; // turun son adımı: gerçek kare
                         Interlocked.Increment(ref Cizilen);
                     }
 
-                    Ciz(dc, son != IntPtr.Zero);
+                    Ciz(dc, goster);
+                    adimNo = (adimNo + 1) % n;
 
                     // Kartın saati bizimkinden biraz hızlı/yavaşsa kuyruğa bakıp hızı hafifçe ayarla (en fazla %2)
                     double duzelt = Math.Max(-0.02, Math.Min(0.02, (ortKuyruk - 1.5) * 0.01));
-                    sonraki += aralik * (1 - duzelt);
+                    sonraki += adim * (1 - duzelt);
                     if (saat.Elapsed.TotalSeconds - sonraki > aralik) sonraki = saat.Elapsed.TotalSeconds; // uzun duraklamadan sonra yeniden hizala
                 }
             }
@@ -399,8 +757,13 @@ void main() {
             {
                 try
                 {
-                    if (program != 0 && glDeleteProgram != null) { glUseProgram(0); glDeleteProgram(program); }
-                    if (doku != 0) glDeleteTextures(1, ref doku);
+                    if (glDeleteProgram != null)
+                    {
+                        glUseProgram(0);
+                        foreach (uint p in new[] { easuProg, rcasProg, hareketProg, araProg }) if (p != 0) glDeleteProgram(p);
+                    }
+                    if (fbo != 0) glDeleteFramebuffers(1, ref fbo);
+                    foreach (uint d in new[] { kaynak[0], kaynak[1], araDoku, hareketDoku, fsrDoku }) { uint x = d; if (x != 0) glDeleteTextures(1, ref x); }
                     wglMakeCurrent(IntPtr.Zero, IntPtr.Zero);
                     if (rc != IntPtr.Zero) wglDeleteContext(rc);
                 }
@@ -410,14 +773,14 @@ void main() {
             }
         }
 
-        // Düşük gecikme: tampon yok, her kare geldiği an çizilir (yalnızca keskinleştirme için GPU yolu)
+        // Düşük gecikme: tampon yok, her kare geldiği an çizilir
         void AnindaDongu(IntPtr dc)
         {
             IntPtr son = IntPtr.Zero;
-            Ciz(dc, false);
+            Ciz(dc, 0);
             while (calis)
             {
-                if (!geldi.WaitOne(100)) { if (son != IntPtr.Zero) Ciz(dc, true); continue; } // pencere boyutu değişirse yine çiz
+                if (!geldi.WaitOne(100)) { if (son != IntPtr.Zero) Ciz(dc, kaynak[0]); continue; } // pencere boyutu değişirse yine çiz
                 IntPtr yeni = IntPtr.Zero;
                 lock (kilit)
                 {
@@ -425,15 +788,17 @@ void main() {
                     if (kuyruk.Count > 0) yeni = kuyruk.Dequeue();
                 }
                 if (yeni == IntPtr.Zero) continue;
+                glBindTexture(TEX2D, kaynak[0]);
                 glTexSubImage2D(TEX2D, 0, 0, 0, w, h, BGRA, UBYTE, yeni);
                 lock (kilit) if (son != IntPtr.Zero) havuz.Push(son);
                 son = yeni;
                 Interlocked.Increment(ref Cizilen);
-                Ciz(dc, true);
+                Ciz(dc, kaynak[0]);
             }
         }
 
-        void Ciz(IntPtr dc, bool goruntuVar)
+        // doku = 0 ise sadece siyah ekran
+        void Ciz(IntPtr dc, uint doku)
         {
             RECT r;
             GetClientRect(hwnd, out r);
@@ -442,7 +807,7 @@ void main() {
             glViewport(0, 0, cw, ch);
             glClearColor(0, 0, 0, 1);
             glClear(RENK);
-            if (goruntuVar)
+            if (doku != 0)
             {
                 int vw = cw, vh = ch;
                 if (!Doldur)
@@ -450,23 +815,51 @@ void main() {
                     vh = (int)((long)cw * h / w);
                     if (vh > ch) { vh = ch; vw = (int)((long)ch * w / h); }
                 }
-                glViewport((cw - vw) / 2, (ch - vh) / 2, vw, vh);
+                int vx = (cw - vw) / 2, vy = (ch - vh) / 2;
                 float guc = Keskinlik;
-                if (program != 0 && guc > 0)
+                glBindTexture(TEX2D, doku);
+                if (shaderHazir && guc > 0)
                 {
-                    glUseProgram(program);
-                    glUniform1i(yerTex, 0);
-                    glUniform2f(yerTexel, 1f / w, 1f / h);
-                    glUniform1f(yerGuc, Math.Min(1f, guc));
+                    // 1) EASU: kaynağı ekrandaki boyuta büyüt (küçültmede düz bilinear yeter), dokunun kendi yönünde
+                    if (fsrDoku == 0 || fsrW != vw || fsrH != vh)
+                    {
+                        if (fsrDoku != 0) glDeleteTextures(1, ref fsrDoku);
+                        fsrDoku = YeniDoku(vw, vh, (int)RGBA8, UBYTE);
+                        fsrW = vw; fsrH = vh;
+                        glBindTexture(TEX2D, doku);
+                    }
+                    glBindFramebuffer(FB, fbo);
+                    glFramebufferTexture2D(FB, RENK0, TEX2D, fsrDoku, 0);
+                    glViewport(0, 0, vw, vh);
+                    if (vw > w || vh > h)
+                    {
+                        glUseProgram(easuProg);
+                        glUniform1i(glGetUniformLocation(easuProg, "tex"), 0);
+                        glUniform2f(glGetUniformLocation(easuProg, "girdi"), w, h);
+                        glUniform2f(glGetUniformLocation(easuProg, "cikti"), vw, vh);
+                    }
+                    else glUseProgram(0);
+                    Dortgen(0f, 1f);
+                    glBindFramebuffer(FB, 0);
+
+                    // 2) RCAS: büyütülmüş görüntüyü ekrana keskinleştirerek çiz
+                    glViewport(vx, vy, vw, vh);
+                    glBindTexture(TEX2D, fsrDoku);
+                    glUseProgram(rcasProg);
+                    glUniform1i(glGetUniformLocation(rcasProg, "tex"), 0);
+                    glUniform2f(glGetUniformLocation(rcasProg, "ofs"), vx, vy);
+                    glUniform2f(glGetUniformLocation(rcasProg, "boyut"), vw, vh);
+                    glUniform1f(glGetUniformLocation(rcasProg, "ters"), asagidanYukari ? 0f : 1f);
+                    glUniform1f(glGetUniformLocation(rcasProg, "keskin"), (float)Math.Pow(2, -2 * (1 - Math.Min(1f, guc)))); // Güçlü = 1, Hafif ≈ 0,25
+                    Dortgen(0f, 1f);
+                    glUseProgram(0);
                 }
-                else if (program != 0) glUseProgram(0);
-                float alt = asagidanYukari ? 0f : 1f, ust = asagidanYukari ? 1f : 0f;
-                glBegin(DORTGEN);
-                glTexCoord2f(0, alt); glVertex2f(-1, -1);
-                glTexCoord2f(1, alt); glVertex2f(1, -1);
-                glTexCoord2f(1, ust); glVertex2f(1, 1);
-                glTexCoord2f(0, ust); glVertex2f(-1, 1);
-                glEnd();
+                else
+                {
+                    glViewport(vx, vy, vw, vh);
+                    if (shaderHazir) glUseProgram(0);
+                    Dortgen(asagidanYukari ? 0f : 1f, asagidanYukari ? 1f : 0f);
+                }
             }
             SwapBuffers(dc);
         }
